@@ -1,0 +1,413 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AURA Companion</title>
+    <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/dylanNew/live2d/webgl/Live2D/lib/live2d.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.2/dist/browser/pixi.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display/dist/index.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+        }
+        html, body {
+            background: #010101 !important;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+            padding: 6px;
+        }
+        #companion-frame {
+            width: 100%;
+            height: 100%;
+            background: #010101 !important;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            overflow: hidden;
+            position: relative;
+        }
+        /* Draggable transparent area holding Shizuku */
+        #avatar-container {
+            height: 60%;
+            width: 100%;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #010101 !important;
+            -webkit-app-region: drag;
+        }
+        #live2d-canvas {
+            width: 100%;
+            height: 100%;
+            -webkit-app-region: no-drag;
+        }
+        /* Floating chat bubbles + input bar */
+        #chat-panel {
+            height: 40%;
+            width: 100%;
+            background: #010101 !important;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            padding: 4px 6px;
+            -webkit-app-region: no-drag;
+        }
+        #messages {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            font-size: 0.82rem;
+            padding: 2px 4px;
+        }
+        #messages::-webkit-scrollbar { width: 4px; }
+        #messages::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.35); border-radius: 10px; }
+
+        .msg {
+            padding: 7px 11px;
+            border-radius: 14px;
+            line-height: 1.38;
+            max-width: 90%;
+            word-wrap: break-word;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.25);
+        }
+        .user-msg {
+            background: #ffd6e0;
+            color: #4a2c38;
+            align-self: flex-end;
+            border-bottom-right-radius: 3px;
+            font-weight: 500;
+        }
+        .ai-msg {
+            background: #ffffff;
+            color: #2b2b38;
+            align-self: flex-start;
+            border-bottom-left-radius: 3px;
+        }
+        #input-area {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 6px;
+            background: #ffffff;
+            padding: 4px 6px;
+            border-radius: 999px;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+        }
+        input {
+            flex: 1;
+            min-width: 0;
+            background: transparent;
+            border: none;
+            color: #2b2b38;
+            padding: 5px 8px;
+            font-size: 0.82rem;
+            outline: none;
+        }
+        input::placeholder { color: #8c8596; }
+        button {
+            border: none;
+            border-radius: 50%;
+            width: 28px;
+            height: 28px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: transform 0.15s ease;
+        }
+        button:hover { transform: scale(1.06); }
+        #mic-btn { background: #f2ecf7; color: #7c6891; }
+        #mic-btn.recording {
+            background: #ff758f;
+            color: #ffffff;
+            animation: pulse 1s infinite;
+        }
+        #send-btn {
+            background: linear-gradient(135deg, #ff8fa3 0%, #ffb3c1 100%);
+            color: #ffffff;
+            font-weight: bold;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.12); }
+            100% { transform: scale(1); }
+        }
+    </style>
+</head>
+<body>
+    <div id="companion-frame">
+        <div id="avatar-container">
+            <canvas id="live2d-canvas"></canvas>
+        </div>
+
+        <div id="chat-panel">
+            <div id="messages">
+                <div class="msg ai-msg">Hey Błażej! Ready whenever you are.</div>
+            </div>
+            <div id="input-area">
+                <button id="mic-btn" onclick="toggleMic()" title="Speak">🎤</button>
+                <input type="text" id="user-input" placeholder="Say something..." autocomplete="off">
+                <button id="send-btn" onclick="sendMessage()" title="Send">➤</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Completely mute Live2D's built-in Japanese voice tracks so only Aura's TTS speaks
+        if (PIXI.live2d && PIXI.live2d.SoundManager) {
+            PIXI.live2d.SoundManager.volume = 0;
+        }
+
+        const avatarContainer = document.getElementById('avatar-container');
+        const app = new PIXI.Application({
+            view: document.getElementById('live2d-canvas'),
+            autoStart: true,
+            backgroundColor: 0x010101,
+            backgroundAlpha: 1,
+            resizeTo: avatarContainer
+        });
+
+        const modelUrl = "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/shizuku/shizuku.model.json";
+        let live2dModel;
+        let currentAudio = null;
+        let audioCtx = null;
+        let analyser = null;
+        let dataArray = null;
+        let currentMouthOpen = 0;
+        let isListening = false;
+        let isSending = false;
+        let activePlaybackToken = 0;
+
+        function layoutModel() {
+            if (!live2dModel) return;
+            const w = avatarContainer.clientWidth;
+            const h = avatarContainer.clientHeight;
+            const scale = Math.min(w / 1200, h / 1350);
+            live2dModel.scale.set(scale);
+            live2dModel.x = w / 2;
+            live2dModel.y = h / 2 + (h * 0.08);
+        }
+
+        window.addEventListener('resize', () => {
+            app.resize();
+            layoutModel();
+        });
+
+        PIXI.live2d.Live2DModel.from(modelUrl, { autoInteract: false }).then(model => {
+            live2dModel = model;
+            app.stage.addChild(model);
+            model.anchor.set(0.5, 0.5);
+            layoutModel();
+
+            model.on('pointerdown', () => {
+                // Trigger silent body tap motion without sound
+                model.motion('tap_body', undefined, undefined, { sound: false });
+            });
+
+            const origUpdate = model.internalModel.update.bind(model.internalModel);
+            model.internalModel.update = function(dt, now) {
+                origUpdate(dt, now);
+                if (analyser && currentAudio && !currentAudio.paused) {
+                    analyser.getByteTimeDomainData(dataArray);
+                    let sumSquares = 0;
+                    for (let i = 0; i < dataArray.length; i++) {
+                        const normalized = (dataArray[i] - 128) / 128;
+                        sumSquares += normalized * normalized;
+                    }
+                    const rms = Math.sqrt(sumSquares / dataArray.length);
+                    const targetMouth = Math.min(1.0, rms * 6.5);
+                    currentMouthOpen += (targetMouth - currentMouthOpen) * 0.45;
+                    model.internalModel.coreModel.setParamFloat('PARAM_MOUTH_OPEN_Y', currentMouthOpen);
+                } else {
+                    currentMouthOpen = 0;
+                    model.internalModel.coreModel.setParamFloat('PARAM_MOUTH_OPEN_Y', 0);
+                }
+            };
+        });
+
+        function stopAllAudio() {
+            activePlaybackToken++;
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio.src = "";
+                currentAudio = null;
+            }
+        }
+
+        function playAudioWithSync(text, audioBase64, targetBubble, motionName = 'tap_body', token = null) {
+            return new Promise((resolve) => {
+                if (token !== null && token !== activePlaybackToken) {
+                    resolve();
+                    return;
+                }
+
+                if (currentAudio) {
+                    currentAudio.pause();
+                    currentAudio.src = "";
+                    currentAudio = null;
+                }
+
+                if (!audioBase64) {
+                    targetBubble.textContent = text;
+                    resolve();
+                    return;
+                }
+
+                const audio = new Audio("data:audio/mpeg;base64," + audioBase64);
+                currentAudio = audio;
+
+                if (!audioCtx) {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume();
+                }
+
+                const source = audioCtx.createMediaElementSource(audio);
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 256;
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+                source.connect(analyser);
+                analyser.connect(audioCtx.destination);
+
+                audio.onplay = () => {
+                    if (token !== null && token !== activePlaybackToken) {
+                        audio.pause();
+                        return;
+                    }
+                    targetBubble.textContent = text;
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    if (live2dModel && motionName) {
+                        live2dModel.motion(motionName, undefined, undefined, { sound: false });
+                    }
+                };
+
+                audio.onended = () => {
+                    if (currentAudio === audio) currentAudio = null;
+                    resolve();
+                };
+                audio.onerror = () => {
+                    if (currentAudio === audio) currentAudio = null;
+                    resolve();
+                };
+
+                audio.play().catch(() => {
+                    targetBubble.textContent = text;
+                    resolve();
+                });
+            });
+        }
+
+        const micBtn = document.getElementById('mic-btn');
+        const inputField = document.getElementById('user-input');
+        const messagesDiv = document.getElementById('messages');
+
+        async function toggleMic() {
+            if (isListening || isSending) return;
+            isListening = true;
+            micBtn.classList.add('recording');
+            inputField.placeholder = "Listening...";
+
+            try {
+                const res = await fetch('/listen', { method: 'POST' });
+                const data = await res.json();
+                if (data.success && data.text) {
+                    inputField.value = data.text;
+                    isListening = false;
+                    micBtn.classList.remove('recording');
+                    sendMessage();
+                    return;
+                } else {
+                    inputField.placeholder = data.error || "Didn't catch that...";
+                    setTimeout(() => { inputField.placeholder = "Say something..."; }, 2000);
+                }
+            } catch (e) {
+                inputField.placeholder = "Mic error";
+                setTimeout(() => { inputField.placeholder = "Say something..."; }, 2000);
+            } finally {
+                isListening = false;
+                micBtn.classList.remove('recording');
+            }
+        }
+
+        inputField.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        async function sendMessage() {
+            if (isSending) return;
+            const text = inputField.value.trim();
+            if (!text) return;
+
+            isSending = true;
+            stopAllAudio();
+            const myToken = activePlaybackToken;
+
+            appendMessage(text, 'user-msg');
+            inputField.value = '';
+            inputField.placeholder = "Say something...";
+
+            const loadingDiv = appendMessage('...', 'ai-msg');
+
+            const chatPromise = fetch('/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text })
+            }).then(r => r.json());
+
+            try {
+                const preRes = await fetch('/precheck', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text })
+                });
+                const preData = await preRes.json();
+
+                if (preData.has_filler && preData.audio && myToken === activePlaybackToken) {
+                    await playAudioWithSync(preData.text, preData.audio, loadingDiv, 'flick_head', myToken);
+                    const answerDiv = appendMessage('...', 'ai-msg');
+                    const data = await chatPromise;
+                    await playAudioWithSync(data.reply, data.audio, answerDiv, 'tap_body', myToken);
+                    return;
+                }
+            } catch (e) {
+                console.error("Precheck skipped:", e);
+            } finally {
+                isSending = false;
+            }
+
+            try {
+                const data = await chatPromise;
+                await playAudioWithSync(data.reply, data.audio, loadingDiv, 'tap_body', myToken);
+            } catch (err) {
+                loadingDiv.textContent = "Couldn't reach my brain right now...";
+            } finally {
+                isSending = false;
+            }
+        }
+
+        function appendMessage(text, className) {
+            const div = document.createElement('div');
+            div.className = `msg ${className}`;
+            div.textContent = text;
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            return div;
+        }
+    </script>
+</body>
+</html>
